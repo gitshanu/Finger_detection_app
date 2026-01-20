@@ -1,21 +1,40 @@
-<<<<<<< HEAD
-# finger_app
+# Finger Capture Quality Check App (Flutter)
 
-A new Flutter project.
+A Flutter-based mobile application that captures finger images using the device camera and provides real-time guidance for correct finger placement. The app performs basic image quality validation and displays an overall quality score with detailed indicators before accepting the captured image.
 
-## Getting Started
+## ✅ Features
+- Live camera preview using Flutter Camera plugin
+- Real-time finger positioning guidance using a circular overlay
+  - ✅ Green circle = finger positioned correctly
+  - ❌ Red circle = finger not in position
+- Captures **only the finger region** (cropped center area)
+- Basic image quality checks after capture:
+  - Focus / Blur score
+  - Illumination check
+  - Finger coverage validation
+- Displays:
+  - Overall Quality Score (0–100)
+  - Pass/Fail result
+  - Individual quality indicators with status
 
-This project is a starting point for a Flutter application.
+## 🛠 Tech Stack
+- **Flutter**
+- **Dart**
+- `camera` package (live preview & capture)
+- `permission_handler` (camera permission)
+- `image` package (image processing, cropping, scoring)
 
-A few resources to get you started if this is your first Flutter project:
+## 📌 How It Works
+1. User opens camera screen.
+2. App shows a circular guide overlay.
+3. When the finger is correctly placed, the circle turns green.
+4. On capture, the app:
+   - crops only the finger area
+   - runs quality checks
+   - shows a quality report (score + pass/fail)
+5. User can retake or accept the image.
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
-=======
-# Finger_detection_app
-Finger Capture Quality Check App built in Flutter that guides users to place their finger correctly and captures a cropped finger image with real-time quality validation (focus, illumination, and coverage) and an overall quality score.
->>>>>>> 1f18f3dcca98337ca5ef872dd5f1ba27e953f033
+## ▶️ Run Locally
+```bash
+flutter pub get
+flutter run
