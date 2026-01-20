@@ -19,10 +19,15 @@ class _CameraScreenState extends State<CameraScreen> {
   bool _isPermissionGranted = false;
   String _errorMessage = '';
 
-  // Live detection
-  bool _fingerInPosition = false;
+  // live detection flags
+  bool _positionOk = false;
   bool _isDetecting = false;
   DateTime _lastDetectTime = DateTime.now();
+
+  // in UI
+  bool _focusOk = true; // relaxed
+  bool _lightOk = true;
+  String _hintText = "Adjust Finger";
 
   @override
   void initState() {
@@ -78,14 +83,13 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  /// ✅ live stream detection (no takePicture spam)
+  // ✅ Live detection -> updates Position + Light indicators
   void _startFingerDetectionStream() {
     if (_controller == null) return;
 
     _controller!.startImageStream((CameraImage image) async {
       if (_isDetecting) return;
 
-      // detection every 500ms
       if (DateTime.now().difference(_lastDetectTime).inMilliseconds < 500)
         return;
 
@@ -93,10 +97,21 @@ class _CameraScreenState extends State<CameraScreen> {
       _lastDetectTime = DateTime.now();
 
       try {
-        final bool inPos = _fastFingerPresenceDetection(image);
+        final posOk = _fastFingerPresenceDetection(image);
+        final lightOk = _fastLightCheck(image);
+
         if (mounted) {
           setState(() {
-            _fingerInPosition = inPos;
+            _positionOk = posOk;
+            _lightOk = lightOk;
+
+            if (!_positionOk) {
+              _hintText = "Adjust Finger";
+            } else if (_positionOk && !_lightOk) {
+              _hintText = "Improve Lighting";
+            } else {
+              _hintText = "Perfect! Tap to Capture";
+            }
           });
         }
       } catch (e) {
@@ -107,7 +122,7 @@ class _CameraScreenState extends State<CameraScreen> {
     });
   }
 
-  /// ✅ only for guiding user (circle green/red)
+  /// ✅ rule based finger presence (for position check)
   bool _fastFingerPresenceDetection(CameraImage image) {
     final Uint8List yPlane = image.planes[0].bytes;
 
@@ -119,7 +134,7 @@ class _CameraScreenState extends State<CameraScreen> {
     final int radius = (width / 6).toInt();
 
     int total = 0;
-    int validBrightnessCount = 0;
+    int okCount = 0;
 
     for (int y = centerY - radius; y < centerY + radius; y += 2) {
       for (int x = centerX - radius; x < centerX + radius; x += 2) {
@@ -134,21 +149,37 @@ class _CameraScreenState extends State<CameraScreen> {
 
         total++;
 
-        // medium brightness = likely finger
+        // medium brightness likely finger
         if (pixelY > 70 && pixelY < 210) {
-          validBrightnessCount++;
+          okCount++;
         }
       }
     }
 
     if (total == 0) return false;
 
-    final double percent = (validBrightnessCount / total) * 100;
-    debugPrint(
-      "Finger position brightness coverage: ${percent.toStringAsFixed(1)}%",
-    );
-
+    final percent = (okCount / total) * 100;
     return percent > 55;
+  }
+
+  /// ✅ quick brightness check for Light indicator
+  bool _fastLightCheck(CameraImage image) {
+    final Uint8List yPlane = image.planes[0].bytes;
+
+    // sample some pixels
+    double sum = 0;
+    int count = 0;
+
+    for (int i = 0; i < yPlane.length; i += 2000) {
+      sum += yPlane[i].toDouble();
+      count++;
+    }
+
+    if (count == 0) return true;
+
+    final avg = sum / count;
+    // realistic range
+    return avg > 70 && avg < 220;
   }
 
   @override
@@ -160,7 +191,7 @@ class _CameraScreenState extends State<CameraScreen> {
     super.dispose();
   }
 
-  /// ✅ Capture ONLY finger crop + relaxed acceptance rules
+  // ✅ capture + popup quality report
   Future<void> _captureImage() async {
     if (_controller == null || !_controller!.value.isInitialized) {
       ScaffoldMessenger.of(
@@ -169,18 +200,17 @@ class _CameraScreenState extends State<CameraScreen> {
       return;
     }
 
-    // ✅ Strict: only allow capture when finger is inside
-    if (!_fingerInPosition) {
+    // strict: must be positioned
+    if (!_positionOk) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Place finger inside the circle first')),
+        const SnackBar(content: Text('Place finger inside the scanner box')),
       );
       return;
     }
 
     try {
-      // stop stream for stable capture
       await _controller!.stopImageStream();
-      await Future.delayed(const Duration(milliseconds: 300));
+      await Future.delayed(const Duration(milliseconds: 250));
 
       await _controller!.setFlashMode(FlashMode.off);
 
@@ -190,50 +220,46 @@ class _CameraScreenState extends State<CameraScreen> {
       final img = img_lib.decodeImage(bytes);
       if (img == null) throw Exception("Failed to decode image");
 
-      // ✅ Crop ONLY center finger area
-      final croppedFinger = _cropFingerCircleRegion(img);
+      // crop finger region
+      final croppedFinger = _cropFingerArea(img);
 
-      // resize for speed
+      // resize for scoring
       final smallFinger = img_lib.copyResize(croppedFinger, width: 320);
       final gray = img_lib.grayscale(smallFinger);
 
-      // ✅ 1) Focus (NOT strict)
+      // focus score (relaxed)
       final focus = _calcFocusScore(gray);
-      final bool focusPassed = focus.value > 12; // relaxed
+      _focusOk = focus.value > 12;
 
-      // ✅ 2) Illumination (still strict)
+      // illumination score
       final illum = _calcIllumScore(gray);
-      final bool illumPassed =
-          illum.value > 70 && illum.value < 220; // relaxed range
+      final illumPassed = illum.value > 70 && illum.value < 220;
 
-      // ✅ 3) Coverage (relaxed + forced pass if circle was green)
+      // coverage score
       _ScoreResult coverage = _calcSkinCoveragePercent(smallFinger);
-      bool coveragePassed = coverage.value > 20; // relaxed threshold
 
-      // ✅ IMPORTANT: if circle was green, do not fail coverage
-      if (_fingerInPosition) {
-        if (coverage.value < 40) {
-          coverage = _ScoreResult(65); // force good coverage score
-        }
+      // relaxed + forced pass if position ok
+      bool coveragePassed = coverage.value > 20;
+      if (_positionOk) {
+        if (coverage.value < 40) coverage = _ScoreResult(65);
         coveragePassed = true;
       }
 
-      // ✅ Overall score calculation
-      final int overallScore = _calculateOverallScore(
+      // overall score
+      final overallScore = _calculateOverallScore(
         focusScore: focus.value,
         illum: illum.value,
         coveragePercent: coverage.value,
       );
 
-      // ✅ FINAL acceptance rule:
-      // Focus is NOT blocking
-      final bool overallPassed = illumPassed && coveragePassed;
+      // focus NOT blocking
+      final overallPassed = illumPassed && coveragePassed;
 
       final qualityItems = [
         _QualityItem(
           'Focus / Blur',
-          focusPassed ? 'Good' : 'Slight Blur (OK)',
-          true, // ✅ always pass focus
+          _focusOk ? 'Good' : 'Slight Blur (OK)',
+          true,
           score: focus.value.toStringAsFixed(1),
         ),
         _QualityItem(
@@ -255,17 +281,18 @@ class _CameraScreenState extends State<CameraScreen> {
       showModalBottomSheet(
         context: context,
         isScrollControlled: true,
+        backgroundColor: const Color(0xFF121212),
         shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
         ),
         builder: (context) => Padding(
-          padding: const EdgeInsets.all(24.0),
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 18),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // ✅ Preview of ONLY finger crop
+              // finger preview
               ClipRRect(
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.circular(18),
                 child: Image.memory(
                   Uint8List.fromList(img_lib.encodeJpg(croppedFinger)),
                   height: 180,
@@ -273,78 +300,89 @@ class _CameraScreenState extends State<CameraScreen> {
                   fit: BoxFit.cover,
                 ),
               ),
-              const SizedBox(height: 18),
 
-              // ✅ Separate Overall Score
+              const SizedBox(height: 14),
+
               Text(
                 'Overall Score: $overallScore / 100',
                 style: const TextStyle(
                   fontSize: 20,
+                  color: Colors.white,
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              const SizedBox(height: 6),
+
+              const SizedBox(height: 8),
+
               Text(
-                overallPassed ? '✅ PASSED' : '❌ FAILED',
+                overallPassed ? "✅ PASSED" : "❌ FAILED",
                 style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.bold,
-                  color: overallPassed ? Colors.green : Colors.red,
+                  color: overallPassed ? Colors.greenAccent : Colors.redAccent,
                 ),
               ),
 
-              const SizedBox(height: 16),
+              const SizedBox(height: 14),
+
               ...qualityItems.map(_buildQualityRow),
-              const SizedBox(height: 18),
+
+              const SizedBox(height: 16),
 
               Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
-                  OutlinedButton.icon(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.refresh, color: Colors.red),
-                    label: const Text(
-                      'Retake',
-                      style: TextStyle(color: Colors.red),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.refresh, color: Colors.redAccent),
+                      label: const Text(
+                        "Retake",
+                        style: TextStyle(color: Colors.redAccent),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: Colors.redAccent),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                      ),
                     ),
                   ),
-                  ElevatedButton.icon(
-                    onPressed: overallPassed
-                        ? () {
-                            Navigator.pop(context);
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('Finger image accepted ✅'),
-                              ),
-                            );
-                          }
-                        : () {
-                            // even if failed, allow accept if you want:
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('Fix lighting and retry'),
-                              ),
-                            );
-                          },
-                    icon: const Icon(Icons.check),
-                    label: const Text('Accept'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.green,
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text("Image Accepted ✅")),
+                        );
+                      },
+                      icon: const Icon(Icons.check),
+                      label: const Text("Accept"),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                      ),
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 12),
+
+              const SizedBox(height: 10),
             ],
           ),
         ),
       );
 
-      // restart detection
-      await Future.delayed(const Duration(milliseconds: 300));
+      // restart stream
+      await Future.delayed(const Duration(milliseconds: 250));
       _startFingerDetectionStream();
     } catch (e) {
-      debugPrint("Capture error: $e");
+      debugPrint("Capture failed: $e");
       if (mounted) {
         ScaffoldMessenger.of(
           context,
@@ -357,11 +395,12 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  // ✅ Crop center region (finger only)
-  img_lib.Image _cropFingerCircleRegion(img_lib.Image img) {
+  // ✅ Crop finger area like scanner box
+  img_lib.Image _cropFingerArea(img_lib.Image img) {
     final int w = img.width;
     final int h = img.height;
 
+    // crop a square from center
     final int cropSize = (w * 0.55).toInt();
     final int cx = w ~/ 2;
     final int cy = h ~/ 2;
@@ -387,21 +426,56 @@ class _CameraScreenState extends State<CameraScreen> {
     );
   }
 
+  // ✅ UI indicator widget
+  Widget _statusIndicator({
+    required IconData icon,
+    required String title,
+    required bool ok,
+  }) {
+    return Column(
+      children: [
+        Container(
+          width: 46,
+          height: 46,
+          decoration: BoxDecoration(
+            color: ok ? Colors.green : Colors.red,
+            shape: BoxShape.circle,
+          ),
+          child: Icon(icon, color: Colors.white, size: 22),
+        ),
+        const SizedBox(height: 6),
+        Text(title, style: const TextStyle(color: Colors.white, fontSize: 14)),
+      ],
+    );
+  }
+
   Widget _buildQualityRow(_QualityItem item) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1D1D1D),
+        borderRadius: BorderRadius.circular(14),
+      ),
       child: Row(
         children: [
           Icon(
             item.passed ? Icons.check_circle : Icons.cancel,
-            color: item.passed ? Colors.green : Colors.red,
-            size: 30,
+            color: item.passed ? Colors.greenAccent : Colors.redAccent,
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10),
           Expanded(
             child: Text(
-              '${item.title}: ${item.status} (score: ${item.score})',
-              style: const TextStyle(fontSize: 16),
+              '${item.title}: ${item.status}',
+              style: const TextStyle(color: Colors.white, fontSize: 15),
+            ),
+          ),
+          Text(
+            item.score,
+            style: const TextStyle(
+              color: Colors.white70,
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
             ),
           ),
         ],
@@ -409,7 +483,7 @@ class _CameraScreenState extends State<CameraScreen> {
     );
   }
 
-  // ✅ Focus scoring (laplacian)
+  // ✅ Focus score
   _ScoreResult _calcFocusScore(img_lib.Image gray) {
     double lapSum = 0;
     int count = 0;
@@ -431,7 +505,7 @@ class _CameraScreenState extends State<CameraScreen> {
     return _ScoreResult(lapSum / count);
   }
 
-  // ✅ Illumination scoring
+  // ✅ Illumination score
   _ScoreResult _calcIllumScore(img_lib.Image gray) {
     double total = 0;
     final totalPixels = gray.width * gray.height;
@@ -445,7 +519,7 @@ class _CameraScreenState extends State<CameraScreen> {
     return _ScoreResult(total / totalPixels);
   }
 
-  // ✅ Skin coverage detection (imperfect but good enough)
+  // ✅ Skin coverage (rule based)
   _ScoreResult _calcSkinCoveragePercent(img_lib.Image img) {
     final int centerX = img.width ~/ 2;
     final int centerY = img.height ~/ 2;
@@ -485,11 +559,10 @@ class _CameraScreenState extends State<CameraScreen> {
     if (totalPixels == 0) return _ScoreResult(0);
 
     final percent = (skinPixels / totalPixels) * 100;
-    debugPrint("Skin coverage in crop: ${percent.toStringAsFixed(1)}%");
     return _ScoreResult(percent);
   }
 
-  // ✅ Overall score out of 100 (relaxed scoring)
+  // ✅ Overall score (relaxed)
   int _calculateOverallScore({
     required double focusScore,
     required double illum,
@@ -500,7 +573,7 @@ class _CameraScreenState extends State<CameraScreen> {
     if (focusPart > 35) focusPart = 35;
     if (focusPart < 0) focusPart = 0;
 
-    // illumination max 35
+    // illum max 35
     double illumPart;
     if (illum >= 85 && illum <= 195) {
       illumPart = 35;
@@ -519,20 +592,24 @@ class _CameraScreenState extends State<CameraScreen> {
     return total.round();
   }
 
+  // ✅ Main UI
   @override
   Widget build(BuildContext context) {
     if (!_isPermissionGranted) {
       return Scaffold(
+        backgroundColor: Colors.black,
         body: Center(
           child: Text(
             _errorMessage.isEmpty ? 'Requesting permission...' : _errorMessage,
             textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.white),
           ),
         ),
       );
     }
 
     return Scaffold(
+      backgroundColor: Colors.black,
       body: FutureBuilder<void>(
         future: _initializeControllerFuture,
         builder: (context, snapshot) {
@@ -544,51 +621,139 @@ class _CameraScreenState extends State<CameraScreen> {
               children: [
                 CameraPreview(_controller!),
 
-                Center(
-                  child: Container(
-                    width: 300,
-                    height: 300,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: _fingerInPosition ? Colors.green : Colors.red,
-                        width: 4,
-                      ),
-                      color: (_fingerInPosition ? Colors.green : Colors.red)
-                          .withAlpha(35),
-                    ),
-                  ),
-                ),
+                // dark overlay for better visibility
+                Container(color: Colors.black.withOpacity(0.35)),
 
                 SafeArea(
                   child: Padding(
-                    padding: const EdgeInsets.all(24.0),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 20,
+                      vertical: 18,
+                    ),
                     child: Column(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(
-                          _fingerInPosition
-                              ? 'Perfect! Press to capture ✅'
-                              : 'Place finger inside the circle',
-                          style: TextStyle(
-                            color: _fingerInPosition
-                                ? Colors.green
-                                : Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            shadows: const [
-                              Shadow(blurRadius: 4, color: Colors.black87),
+                        // Top title
+                        Row(
+                          children: const [
+                            Text(
+                              "FingerScanner",
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 18,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            Spacer(),
+                            Icon(Icons.settings, color: Colors.white70),
+                          ],
+                        ),
+
+                        const SizedBox(height: 18),
+
+                        // top 3 indicators (Focus/Light/Position)
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            _statusIndicator(
+                              icon: Icons.center_focus_strong,
+                              title: "Focus",
+                              ok: true, // keep relaxed always OK
+                            ),
+                            _statusIndicator(
+                              icon: Icons.wb_sunny,
+                              title: "Light",
+                              ok: _lightOk,
+                            ),
+                            _statusIndicator(
+                              icon: Icons.crop_free,
+                              title: "Position",
+                              ok: _positionOk,
+                            ),
+                          ],
+                        ),
+
+                        const Spacer(),
+
+                        // scanner box in center
+                        Container(
+                          width: 220,
+                          height: 220,
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(18),
+                            border: Border.all(
+                              color: _positionOk ? Colors.green : Colors.red,
+                              width: 3,
+                            ),
+                            color: (_positionOk ? Colors.green : Colors.red)
+                                .withOpacity(0.12),
+                            boxShadow: [
+                              BoxShadow(
+                                color: (_positionOk ? Colors.green : Colors.red)
+                                    .withOpacity(0.25),
+                                blurRadius: 16,
+                                spreadRadius: 2,
+                              ),
                             ],
                           ),
-                          textAlign: TextAlign.center,
+                          child: const Center(
+                            child: Icon(
+                              Icons.fingerprint,
+                              size: 90,
+                              color: Colors.white70,
+                            ),
+                          ),
                         ),
-                        FloatingActionButton(
-                          backgroundColor: _fingerInPosition
-                              ? Colors.green
-                              : Colors.blue,
-                          onPressed: _captureImage,
-                          child: const Icon(Icons.fingerprint, size: 36),
+
+                        const Spacer(),
+
+                        // hint text
+                        Text(
+                          _hintText,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
+
+                        const SizedBox(height: 10),
+
+                        Text(
+                          "Keep your finger steady inside the box",
+                          style: TextStyle(
+                            color: Colors.white.withOpacity(0.7),
+                            fontSize: 14,
+                          ),
+                        ),
+
+                        const SizedBox(height: 18),
+
+                        // capture button
+                        GestureDetector(
+                          onTap: _captureImage,
+                          child: Container(
+                            width: 72,
+                            height: 72,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF6A5ACD),
+                              borderRadius: BorderRadius.circular(18),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.4),
+                                  blurRadius: 12,
+                                  offset: const Offset(0, 6),
+                                ),
+                              ],
+                            ),
+                            child: const Icon(
+                              Icons.camera_alt,
+                              color: Colors.white,
+                              size: 32,
+                            ),
+                          ),
+                        ),
+
+                        const SizedBox(height: 22),
                       ],
                     ),
                   ),
@@ -602,7 +767,10 @@ class _CameraScreenState extends State<CameraScreen> {
           }
 
           return Center(
-            child: Text(_errorMessage.isEmpty ? "Loading..." : _errorMessage),
+            child: Text(
+              _errorMessage.isEmpty ? "Loading..." : _errorMessage,
+              style: const TextStyle(color: Colors.white),
+            ),
           );
         },
       ),
@@ -610,7 +778,7 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 }
 
-// ================== Models ==================
+// ========== helper models ==========
 class _QualityItem {
   final String title;
   final String status;
