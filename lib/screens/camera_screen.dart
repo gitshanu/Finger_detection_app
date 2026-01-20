@@ -19,13 +19,13 @@ class _CameraScreenState extends State<CameraScreen> {
   bool _isPermissionGranted = false;
   String _errorMessage = '';
 
-  // live detection flags
+
   bool _positionOk = false;
   bool _isDetecting = false;
   DateTime _lastDetectTime = DateTime.now();
 
-  // in UI
-  bool _focusOk = true; // relaxed
+ 
+  bool _focusOk = true;
   bool _lightOk = true;
   String _hintText = "Adjust Finger";
 
@@ -83,7 +83,7 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  // ✅ Live detection -> updates Position + Light indicators
+  
   void _startFingerDetectionStream() {
     if (_controller == null) return;
 
@@ -122,7 +122,7 @@ class _CameraScreenState extends State<CameraScreen> {
     });
   }
 
-  /// ✅ rule based finger presence (for position check)
+  
   bool _fastFingerPresenceDetection(CameraImage image) {
     final Uint8List yPlane = image.planes[0].bytes;
 
@@ -149,7 +149,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
         total++;
 
-        // medium brightness likely finger
+       
         if (pixelY > 70 && pixelY < 210) {
           okCount++;
         }
@@ -162,11 +162,11 @@ class _CameraScreenState extends State<CameraScreen> {
     return percent > 55;
   }
 
-  /// ✅ quick brightness check for Light indicator
+ 
   bool _fastLightCheck(CameraImage image) {
     final Uint8List yPlane = image.planes[0].bytes;
 
-    // sample some pixels
+   
     double sum = 0;
     int count = 0;
 
@@ -178,7 +178,7 @@ class _CameraScreenState extends State<CameraScreen> {
     if (count == 0) return true;
 
     final avg = sum / count;
-    // realistic range
+   
     return avg > 70 && avg < 220;
   }
 
@@ -191,7 +191,7 @@ class _CameraScreenState extends State<CameraScreen> {
     super.dispose();
   }
 
-  // ✅ capture + popup quality report
+
   Future<void> _captureImage() async {
     if (_controller == null || !_controller!.value.isInitialized) {
       ScaffoldMessenger.of(
@@ -200,7 +200,7 @@ class _CameraScreenState extends State<CameraScreen> {
       return;
     }
 
-    // strict: must be positioned
+   
     if (!_positionOk) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Place finger inside the scanner box')),
@@ -220,18 +220,18 @@ class _CameraScreenState extends State<CameraScreen> {
       final img = img_lib.decodeImage(bytes);
       if (img == null) throw Exception("Failed to decode image");
 
-      // crop finger region
+     
       final croppedFinger = _cropFingerArea(img);
 
-      // resize for scoring
+     
       final smallFinger = img_lib.copyResize(croppedFinger, width: 320);
       final gray = img_lib.grayscale(smallFinger);
 
-      // focus score (relaxed)
+      
       final focus = _calcFocusScore(gray);
       _focusOk = focus.value > 12;
 
-      // illumination score
+      
       final illum = _calcIllumScore(gray);
       final illumPassed = illum.value > 70 && illum.value < 220;
 
@@ -245,14 +245,14 @@ class _CameraScreenState extends State<CameraScreen> {
         coveragePassed = true;
       }
 
-      // overall score
+      
       final overallScore = _calculateOverallScore(
         focusScore: focus.value,
         illum: illum.value,
         coveragePercent: coverage.value,
       );
 
-      // focus NOT blocking
+   
       final overallPassed = illumPassed && coveragePassed;
 
       final qualityItems = [
@@ -378,7 +378,7 @@ class _CameraScreenState extends State<CameraScreen> {
         ),
       );
 
-      // restart stream
+      
       await Future.delayed(const Duration(milliseconds: 250));
       _startFingerDetectionStream();
     } catch (e) {
@@ -395,12 +395,12 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  // ✅ Crop finger area like scanner box
+ 
   img_lib.Image _cropFingerArea(img_lib.Image img) {
     final int w = img.width;
     final int h = img.height;
 
-    // crop a square from center
+    
     final int cropSize = (w * 0.55).toInt();
     final int cx = w ~/ 2;
     final int cy = h ~/ 2;
@@ -426,7 +426,7 @@ class _CameraScreenState extends State<CameraScreen> {
     );
   }
 
-  // ✅ UI indicator widget
+
   Widget _statusIndicator({
     required IconData icon,
     required String title,
@@ -483,7 +483,7 @@ class _CameraScreenState extends State<CameraScreen> {
     );
   }
 
-  // ✅ Focus score
+ 
   _ScoreResult _calcFocusScore(img_lib.Image gray) {
     double lapSum = 0;
     int count = 0;
@@ -505,7 +505,7 @@ class _CameraScreenState extends State<CameraScreen> {
     return _ScoreResult(lapSum / count);
   }
 
-  // ✅ Illumination score
+ 
   _ScoreResult _calcIllumScore(img_lib.Image gray) {
     double total = 0;
     final totalPixels = gray.width * gray.height;
@@ -519,7 +519,7 @@ class _CameraScreenState extends State<CameraScreen> {
     return _ScoreResult(total / totalPixels);
   }
 
-  // ✅ Skin coverage (rule based)
+  
   _ScoreResult _calcSkinCoveragePercent(img_lib.Image img) {
     final int centerX = img.width ~/ 2;
     final int centerY = img.height ~/ 2;
@@ -562,18 +562,18 @@ class _CameraScreenState extends State<CameraScreen> {
     return _ScoreResult(percent);
   }
 
-  // ✅ Overall score (relaxed)
+  
   int _calculateOverallScore({
     required double focusScore,
     required double illum,
     required double coveragePercent,
   }) {
-    // focus max 35
+   
     double focusPart = (focusScore / 35) * 35;
     if (focusPart > 35) focusPart = 35;
     if (focusPart < 0) focusPart = 0;
 
-    // illum max 35
+   
     double illumPart;
     if (illum >= 85 && illum <= 195) {
       illumPart = 35;
@@ -583,7 +583,7 @@ class _CameraScreenState extends State<CameraScreen> {
       illumPart = 10;
     }
 
-    // coverage max 30
+    
     double coverPart = (coveragePercent / 100) * 30;
     if (coverPart > 30) coverPart = 30;
     if (coverPart < 0) coverPart = 0;
@@ -592,7 +592,7 @@ class _CameraScreenState extends State<CameraScreen> {
     return total.round();
   }
 
-  // ✅ Main UI
+  
   @override
   Widget build(BuildContext context) {
     if (!_isPermissionGranted) {
@@ -621,7 +621,7 @@ class _CameraScreenState extends State<CameraScreen> {
               children: [
                 CameraPreview(_controller!),
 
-                // dark overlay for better visibility
+               
                 Container(color: Colors.black.withOpacity(0.35)),
 
                 SafeArea(
@@ -632,7 +632,7 @@ class _CameraScreenState extends State<CameraScreen> {
                     ),
                     child: Column(
                       children: [
-                        // Top title
+                       
                         Row(
                           children: const [
                             Text(
@@ -650,14 +650,14 @@ class _CameraScreenState extends State<CameraScreen> {
 
                         const SizedBox(height: 18),
 
-                        // top 3 indicators (Focus/Light/Position)
+                        
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                           children: [
                             _statusIndicator(
                               icon: Icons.center_focus_strong,
                               title: "Focus",
-                              ok: true, // keep relaxed always OK
+                              ok: true,
                             ),
                             _statusIndicator(
                               icon: Icons.wb_sunny,
@@ -674,7 +674,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
                         const Spacer(),
 
-                        // scanner box in center
+                      
                         Container(
                           width: 220,
                           height: 220,
@@ -706,7 +706,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
                         const Spacer(),
 
-                        // hint text
+                        
                         Text(
                           _hintText,
                           style: const TextStyle(
@@ -728,7 +728,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
                         const SizedBox(height: 18),
 
-                        // capture button
+                        
                         GestureDetector(
                           onTap: _captureImage,
                           child: Container(
